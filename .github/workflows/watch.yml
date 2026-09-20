@@ -1,0 +1,58 @@
+name: avito-watch
+
+# Кладётся в репозиторий по пути .github/workflows/watch.yml
+
+on:
+  schedule:
+    # каждые 30 минут; GitHub может задержать запуск на 10–20 минут — это нормально
+    - cron: "*/30 * * * *"
+  workflow_dispatch:        # кнопка "Run workflow" для ручного запуска
+
+permissions:
+  contents: write           # нужно, чтобы коммитить список увиденных объявлений
+
+concurrency:
+  group: avito-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Проверить, пускает ли Авито
+        run: |
+          code=$(curl -s -o /tmp/page.html -w "%{http_code}" \
+            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36" \
+            -H "Accept-Language: ru-RU,ru;q=0.9" \
+            "https://www.avito.ru/moskva/noutbuki?q=macbook+pro+32gb&s=104" || true)
+          echo "HTTP-код: $code"
+          echo "размер страницы: $(wc -c < /tmp/page.html) байт"
+          echo "блоков объявлений: $(grep -o 'data-marker="item"' /tmp/page.html | wc -l)"
+          if grep -qi 'доступ ограничен\|подтвердите, что вы не робот\|firewall' /tmp/page.html; then
+            echo "::warning::Авито показал заглушку — этот адрес ему не нравится"
+          fi
+
+      - name: Найти новые объявления
+        env:
+          AVITO_TG_TOKEN: ${{ secrets.AVITO_TG_TOKEN }}
+          AVITO_TG_CHAT: ${{ secrets.AVITO_TG_CHAT }}
+          AVITO_STATE: state/seen.json
+        run: |
+          mkdir -p state
+          python3 avito_watch.py
+
+      - name: Запомнить, что уже показывали
+        run: |
+          git config user.name "avito-watch"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/seen.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "state: $(date -u +%F\ %H:%M)"
+          git push || echo "нечего пушить"
